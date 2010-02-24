@@ -37,6 +37,11 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <sys/socket.h>
+#include <syslog.h>
+#include <netinet/in.h>
+
 #define __USE_POSIX199309
 #include <signal.h>
 
@@ -224,6 +229,9 @@
 #define redisAssert(_e) ((_e)?(void)0 : (_redisAssert(#_e,__FILE__,__LINE__),_exit(1)))
 static void _redisAssert(char *estr, char *file, int line);
 
+/* Maximum UDP packet length */
+#define UDP_MXLEN 65507
+
 /*================================= Data types ============================== */
 
 /* A redis object, that is a type able to hold a string / list / set */
@@ -356,6 +364,10 @@ struct redisServer {
     sds bgrewritebuf; /* buffer taken by parent during oppend only rewrite */
     struct saveparam *saveparams;
     int saveparamslen;
+    struct sockaddr_in *syslogaddress;
+    int syslogsocket;
+    int syslogfacility;
+    int sysloglevel;
     char *logfile;
     char *bindaddr;
     char *dbfilename;
@@ -884,11 +896,27 @@ static void redisLog(int level, const char *fmt, ...) {
         time_t now;
 
         now = time(NULL);
-        strftime(buf,64,"%d %b %H:%M:%S",localtime(&now));
-        fprintf(fp,"[%d] %s %c ",(int)getpid(),buf,c[level]);
+        strftime(buf, 64, "%d %b %H:%M:%S", localtime(&now));
+
+        fprintf(fp, "[%d] %s %c ", (int) getpid(), buf, c[level]);
         vfprintf(fp, fmt, ap);
-        fprintf(fp,"\n");
+        fprintf(fp, "\n");
         fflush(fp);
+
+        if ((level == REDIS_DEBUG && server.sysloglevel == LOG_DEBUG) ||
+            (level == REDIS_VERBOSE && server.sysloglevel <= LOG_INFO) ||
+            (level == REDIS_NOTICE && server.sysloglevel <= LOG_NOTICE) ||
+            (level == REDIS_WARNING && server.sysloglevel <= LOG_WARNING)) {
+
+            char *msg = zmalloc(UDP_MXLEN);
+            memset(msg, 0, UDP_MXLEN);
+
+            sprintf(msg, "<%d>redis: ", server.syslogfacility|server.sysloglevel);
+            vsnprintf(msg + (strlen(msg)), UDP_MXLEN, fmt, ap);
+            sendto (server.syslogsocket, msg, strlen(msg), 0, (struct sockaddr *) server.syslogaddress, sizeof(*server.syslogaddress));
+
+            zfree(msg);
+        }
     }
     va_end(ap);
 
@@ -898,7 +926,7 @@ static void redisLog(int level, const char *fmt, ...) {
 /*====================== Hash table type implementation  ==================== */
 
 /* This is an hash table type that uses the SDS dynamic strings libary as
- * keys and radis objects as values (objects can hold SDS strings,
+ * keys and redis objects as values (objects can hold SDS strings,
  * lists, sets). */
 
 static void dictVanillaFree(void *privdata, void *val)
@@ -1413,6 +1441,10 @@ static void initServerConfig() {
     server.maxidletime = REDIS_MAXIDLETIME;
     server.saveparams = NULL;
     server.logfile = NULL; /* NULL = log on standard output */
+    server.syslogaddress = NULL;
+    server.syslogsocket = 0;
+    server.syslogfacility = LOG_SYSLOG;
+    server.sysloglevel = LOG_WARNING;
     server.bindaddr = NULL;
     server.glueoutputbuf = 1;
     server.daemonize = 0;
@@ -1605,6 +1637,113 @@ static void loadServerConfig(char *filename) {
             else if (!strcasecmp(argv[1],"warning")) server.verbosity = REDIS_WARNING;
             else {
                 err = "Invalid log level. Must be one of debug, notice, warning";
+                goto loaderr;
+            }
+        } else if (!strcasecmp(argv[0],"syslogaddress") && argc == 2) {
+            char *input = zstrdup(argv[1]);
+            char *host = strsep(&input, ":");
+            char *port = strsep(&input, ":");
+
+            if (host) {
+                server.syslogaddress = zmalloc(sizeof(struct sockaddr_in));
+                memset(server.syslogaddress, 0, sizeof(struct sockaddr_in));
+                server.syslogaddress->sin_family = AF_INET,
+                server.syslogaddress->sin_addr.s_addr = inet_addr(host);
+
+                if (port && strlen(port)) {
+                    server.syslogaddress->sin_port = htons(atoi(port));
+                } else {
+                    server.syslogaddress->sin_port = htons(514);
+                }
+
+                if ((server.syslogsocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
+                    err = sdscatprintf(sdsempty(),
+                        "socket: %s", strerror(errno));
+                    goto loaderr;
+                }
+            }
+            zfree(input);
+        } else if (!strcasecmp(argv[0],"syslogfacility") && argc == 2) {
+            typedef struct _code {
+                char *c_name;
+                int c_val;
+            } CODE;
+            CODE fnames[] = {
+                { "auth",       LOG_AUTH },
+                { "authpriv",   LOG_AUTHPRIV },
+                { "cron",       LOG_CRON },
+                { "daemon",     LOG_DAEMON },
+                { "ftp",        LOG_FTP },
+                { "install",    LOG_INSTALL },
+                { "kern",       LOG_KERN },
+                { "lpr",        LOG_LPR },
+                { "mail",       LOG_MAIL },
+                { "netinfo",    LOG_NETINFO },
+                { "ras",        LOG_RAS },
+                { "remoteauth", LOG_REMOTEAUTH },
+                { "news",       LOG_NEWS },
+                { "syslog",     LOG_SYSLOG },
+                { "user",       LOG_USER },
+                { "uucp",       LOG_UUCP },
+                { "local0",     LOG_LOCAL0 },
+                { "local1",     LOG_LOCAL1 },
+                { "local2",     LOG_LOCAL2 },
+                { "local3",     LOG_LOCAL3 },
+                { "local4",     LOG_LOCAL4 },
+                { "local5",     LOG_LOCAL5 },
+                { "local6",     LOG_LOCAL6 },
+                { "local7",     LOG_LOCAL7 },
+                { "launchd",    LOG_LAUNCHD },
+                { 0,  -1 }
+            };
+
+            int i, num_facilities = sizeof(fnames) / sizeof(CODE) - 1;
+
+            for (i = 0; i < num_facilities; i++) {
+                if (!strcasecmp(fnames[i].c_name, argv[1])) {
+                    server.syslogfacility = fnames[i].c_val;
+                    break;
+                }
+            }
+
+            if (i == num_facilities) {
+                err = sdscatprintf(sdsempty(),
+                    "Unknown syslog facility: %s", argv[1]);
+                goto loaderr;
+            }
+        } else if (!strcasecmp(argv[0],"sysloglevel") && argc == 2) {
+            typedef struct _code {
+                char *c_name;
+                int c_val;
+            } CODE;
+
+            CODE prioritynames[] = {
+                { "alert",   LOG_ALERT },
+                { "crit",    LOG_CRIT },
+                { "debug",   LOG_DEBUG },
+                { "emerg",   LOG_EMERG },
+                { "err",     LOG_ERR },
+                { "error",   LOG_ERR }, /* DEPRECATED */
+                { "info",    LOG_INFO },
+                { "notice",  LOG_NOTICE },
+                { "panic",   LOG_EMERG }, /* DEPRECATED */
+                { "warn",    LOG_WARNING }, /* DEPRECATED */
+                { "warning", LOG_WARNING },
+                { 0,  -1 }
+            };
+
+            int i, num_priorities = sizeof(prioritynames) / sizeof(CODE) - 1;
+
+            for (i = 0; i < num_priorities; i++) {
+                if (!strcasecmp(prioritynames[i].c_name, argv[1])) {
+                    server.sysloglevel = prioritynames[i].c_val;
+                    break;
+                }
+            }
+
+            if (i == num_priorities) {
+                err = sdscatprintf(sdsempty(),
+                    "Unknown syslog priority level: %s", argv[1]);
                 goto loaderr;
             }
         } else if (!strcasecmp(argv[0],"logfile") && argc == 2) {
