@@ -65,7 +65,6 @@
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
-#include <bits/sigthread.h>
 
 #if defined(__sun)
 #include "solarisfixes.h"
