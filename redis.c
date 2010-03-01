@@ -65,6 +65,7 @@
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
+#include <bits/sigthread.h>
 
 #if defined(__sun)
 #include "solarisfixes.h"
@@ -1674,13 +1675,9 @@ static void loadServerConfig(char *filename) {
                 { "cron",       LOG_CRON },
                 { "daemon",     LOG_DAEMON },
                 { "ftp",        LOG_FTP },
-                { "install",    LOG_INSTALL },
                 { "kern",       LOG_KERN },
                 { "lpr",        LOG_LPR },
                 { "mail",       LOG_MAIL },
-                { "netinfo",    LOG_NETINFO },
-                { "ras",        LOG_RAS },
-                { "remoteauth", LOG_REMOTEAUTH },
                 { "news",       LOG_NEWS },
                 { "syslog",     LOG_SYSLOG },
                 { "user",       LOG_USER },
@@ -1693,7 +1690,6 @@ static void loadServerConfig(char *filename) {
                 { "local5",     LOG_LOCAL5 },
                 { "local6",     LOG_LOCAL6 },
                 { "local7",     LOG_LOCAL7 },
-                { "launchd",    LOG_LAUNCHD },
                 { 0,  -1 }
             };
 
