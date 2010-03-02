@@ -178,7 +178,7 @@ proc createComplexDataset {r ops} {
 }
 
 proc datasetDigest r {
-    set keys [lsort [split [$r keys *] " "]]
+    set keys [lsort [$r keys *]]
     set digest {}
     foreach k $keys {
         set t [$r type $k]
@@ -204,7 +204,7 @@ proc datasetDigest r {
                     set aux [::sha1::sha1 -hex [$r zrange $k 0 -1]]
                 }
             } default {
-                error "Type not supported"
+                error "Type not supported: $t"
             }
         }
         if {$aux eq {}} continue
@@ -952,7 +952,6 @@ proc main {server port} {
         $r sort tosort {DESC}
     } [lsort -decreasing -integer $res]
 
-while 1 {
     test {SORT speed, sorting 10000 elements list using BY, 100 times} {
         set start [clock clicks -milliseconds]
         for {set i 0} {$i < 100} {incr i} {
@@ -963,7 +962,7 @@ while 1 {
         flush stdout
         format {}
     } {}
-}
+
     test {SORT speed, sorting 10000 elements list directly, 100 times} {
         set start [clock clicks -milliseconds]
         for {set i 0} {$i < 100} {incr i} {
@@ -1663,6 +1662,18 @@ while 1 {
         set v3 [$r exec]
         list $v1 $v2 $v3
     } {QUEUED QUEUED {{a b c} PONG}}
+
+    test {DISCARD} {
+        $r del mylist
+        $r rpush mylist a
+        $r rpush mylist b
+        $r rpush mylist c
+        $r multi
+        set v1 [$r del mylist]
+        set v2 [$r discard]
+        set v3 [$r lrange mylist 0 -1]
+        list $v1 $v2 $v3
+    } {QUEUED OK {a b c}}
 
     test {APPEND basics} {
         list [$r append foo bar] [$r get foo] \

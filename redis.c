@@ -27,7 +27,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define REDIS_VERSION "1.3.3"
+#define REDIS_VERSION "1.3.4"
 
 #include "fmacros.h"
 #include "config.h"
@@ -665,6 +665,7 @@ static void zscoreCommand(redisClient *c);
 static void zremrangebyscoreCommand(redisClient *c);
 static void multiCommand(redisClient *c);
 static void execCommand(redisClient *c);
+static void discardCommand(redisClient *c);
 static void blpopCommand(redisClient *c);
 static void brpopCommand(redisClient *c);
 static void appendCommand(redisClient *c);
@@ -745,6 +746,7 @@ static struct redisCommand cmdTable[] = {
     {"type",typeCommand,2,REDIS_CMD_INLINE,1,1,1},
     {"multi",multiCommand,1,REDIS_CMD_INLINE,0,0,0},
     {"exec",execCommand,1,REDIS_CMD_INLINE,0,0,0},
+    {"discard",discardCommand,1,REDIS_CMD_INLINE,0,0,0},
     {"sync",syncCommand,1,REDIS_CMD_INLINE,0,0,0},
     {"flushdb",flushdbCommand,1,REDIS_CMD_INLINE,0,0,0},
     {"flushall",flushallCommand,1,REDIS_CMD_INLINE,0,0,0},
@@ -2275,7 +2277,7 @@ static int processCommand(redisClient *c) {
     }
 
     /* Exec the command */
-    if (c->flags & REDIS_MULTI && cmd->proc != execCommand) {
+    if (c->flags & REDIS_MULTI && cmd->proc != execCommand && cmd->proc != discardCommand) {
         queueMultiCommand(c,cmd);
         addReply(c,shared.queued);
     } else {
@@ -3952,7 +3954,7 @@ static void keysCommand(redisClient *c) {
     dictEntry *de;
     sds pattern = c->argv[1]->ptr;
     int plen = sdslen(pattern);
-    unsigned long numkeys = 0, keyslen = 0;
+    unsigned long numkeys = 0;
     robj *lenobj = createObject(REDIS_STRING,NULL);
 
     di = dictGetIterator(c->db->dict);
@@ -3965,17 +3967,15 @@ static void keysCommand(redisClient *c) {
         if ((pattern[0] == '*' && pattern[1] == '\0') ||
             stringmatchlen(pattern,plen,key,sdslen(key),0)) {
             if (expireIfNeeded(c->db,keyobj) == 0) {
-                if (numkeys != 0)
-                    addReply(c,shared.space);
+                addReplyBulkLen(c,keyobj);
                 addReply(c,keyobj);
+                addReply(c,shared.crlf);
                 numkeys++;
-                keyslen += sdslen(key);
             }
         }
     }
     dictReleaseIterator(di);
-    lenobj->ptr = sdscatprintf(sdsempty(),"$%lu\r\n",keyslen+(numkeys ? (numkeys-1) : 0));
-    addReply(c,shared.crlf);
+    lenobj->ptr = sdscatprintf(sdsempty(),"*%lu\r\n",numkeys);
 }
 
 static void dbsizeCommand(redisClient *c) {
@@ -6185,6 +6185,18 @@ static void multiCommand(redisClient *c) {
     addReply(c,shared.ok);
 }
 
+static void discardCommand(redisClient *c) {
+    if (!(c->flags & REDIS_MULTI)) {
+        addReplySds(c,sdsnew("-ERR DISCARD without MULTI\r\n"));
+        return;
+    }
+
+    freeClientMultiState(c);
+    initClientMultiState(c);
+    c->flags &= (~REDIS_MULTI);
+    addReply(c,shared.ok);
+}
+
 static void execCommand(redisClient *c) {
     int j;
     robj **orig_argv;
@@ -7538,6 +7550,7 @@ static int vmWriteObjectOnSwap(robj *o, off_t page) {
         return REDIS_ERR;
     }
     rdbSaveObject(server.vm_fp,o);
+    fflush(server.vm_fp);
     if (server.vm_enabled) pthread_mutex_unlock(&server.io_swapfile_mutex);
     return REDIS_OK;
 }
@@ -7565,7 +7578,6 @@ static int vmSwapObjectBlocking(robj *key, robj *val) {
         (unsigned long long) page, (unsigned long long) pages);
     server.vm_stats_swapped_objects++;
     server.vm_stats_swapouts++;
-    fflush(server.vm_fp);
     return REDIS_OK;
 }
 
@@ -7694,7 +7706,7 @@ static double computeObjectSwappability(robj *o) {
         }
         break;
     }
-    return (double)asize*log(1+asize);
+    return (double)age*log(1+asize);
 }
 
 /* Try to swap an object that's a good candidate for swapping.
