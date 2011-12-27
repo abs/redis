@@ -1,4 +1,4 @@
-redis (2:2.4.4-1cx1) unstable; urgency=low
+redis (2:2.4.5-1cx1) unstable; urgency=low
 
   * New upstream release (2.4.5)
 
