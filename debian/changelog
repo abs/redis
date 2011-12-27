@@ -1,5 +1,11 @@
 redis (2:2.4.4-1cx1) unstable; urgency=low
 
+  * New upstream release (2.4.5)
+
+ -- Andrei Soroker <andrei@connect.me>  Tue, 27 Dec 2011 11:56:24 -0800
+
+redis (2:2.4.4-1cx1) unstable; urgency=low
+
   * CX branch (2.4.4)
 
  -- Andrei Soroker <andrei@connect.me>  Tue, 21 Dec 2011 13:13:31 -0800
