@@ -716,8 +716,11 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
             call(c);
             resetClient(c);
             /* There may be more data to process in the input buffer. */
-            if (c->querybuf && sdslen(c->querybuf) > 0)
+            if (c->querybuf && sdslen(c->querybuf) > 0) {
+                server.current_client = c;
                 processInputBuffer(c);
+                server.current_client = NULL;
+            }
         }
     }
 
@@ -795,6 +798,7 @@ void createSharedObjects(void) {
 }
 
 void initServerConfig() {
+    server.arch_bits = (sizeof(long) == 8) ? 64 : 32;
     server.port = REDIS_SERVERPORT;
     server.bindaddr = NULL;
     server.unixsocket = NULL;
@@ -907,6 +911,7 @@ void initServer() {
     }
 
     server.mainthread = pthread_self();
+    server.current_client = NULL;
     server.clients = listCreate();
     server.slaves = listCreate();
     server.monitors = listCreate();
@@ -978,6 +983,16 @@ void initServer() {
                 strerror(errno));
             exit(1);
         }
+    }
+
+    /* 32 bit instances are limited to 4GB of address space, so if there is
+     * no explicit limit in the user provided configuration we set a limit
+     * at 3.5GB using maxmemory with 'noeviction' policy'. This saves
+     * useless crashes of the Redis instance. */
+    if (server.arch_bits == 32 && server.maxmemory == 0) {
+        redisLog(REDIS_WARNING,"Warning: 32 bit instance detected but no memory limit set. Setting 3.5 GB maxmemory limit with 'noeviction' policy now.");
+        server.maxmemory = 3584LL*(1024*1024); /* 3584 MB = 3.5 GB */
+        server.maxmemory_policy = REDIS_MAXMEMORY_NO_EVICTION;
     }
 
     if (server.vm_enabled) vmInit();
@@ -1253,8 +1268,9 @@ sds genRedisInfoString(void) {
         "redis_version:%s\r\n"
         "redis_git_sha1:%s\r\n"
         "redis_git_dirty:%d\r\n"
-        "arch_bits:%s\r\n"
+        "arch_bits:%d\r\n"
         "multiplexing_api:%s\r\n"
+        "gcc_version:%d.%d.%d\r\n"
         "process_id:%ld\r\n"
         "uptime_in_seconds:%ld\r\n"
         "uptime_in_days:%ld\r\n"
@@ -1295,8 +1311,13 @@ sds genRedisInfoString(void) {
         ,REDIS_VERSION,
         redisGitSHA1(),
         strtol(redisGitDirty(),NULL,10) > 0,
-        (sizeof(long) == 8) ? "64" : "32",
+        server.arch_bits,
         aeGetApiName(),
+#ifdef __GNUC__
+        __GNUC__,__GNUC_MINOR__,__GNUC_PATCHLEVEL__,
+#else
+        0,0,0,
+#endif
         (long) getpid(),
         uptime,
         uptime/(3600*24),
@@ -1347,6 +1368,39 @@ sds genRedisInfoString(void) {
             server.aofrewrite_scheduled,
             sdslen(server.aofbuf),
             bioPendingJobsOfType(REDIS_BIO_AOF_FSYNC));
+    }
+
+    /* List connected slaves */
+    if (listLength(server.slaves)) {
+        int slaveid = 0;
+        listNode *ln;
+        listIter li;
+
+        listRewind(server.slaves,&li);
+        while((ln = listNext(&li))) {
+            redisClient *slave = listNodeValue(ln);
+            char *state = NULL;
+            char ip[32];
+            int port;
+
+            if (anetPeerToString(slave->fd,ip,&port) == -1) continue;
+            switch(slave->replstate) {
+            case REDIS_REPL_WAIT_BGSAVE_START:
+            case REDIS_REPL_WAIT_BGSAVE_END:
+                state = "wait_bgsave";
+                break;
+            case REDIS_REPL_SEND_BULK:
+                state = "send_bulk";
+                break;
+            case REDIS_REPL_ONLINE:
+                state = "online";
+                break;
+            }
+            if (state == NULL) continue;
+            info = sdscatprintf(info,"slave%d:%s,%d,%s\r\n",
+                slaveid,ip,port,state);
+            slaveid++;
+        }
     }
 
     if (server.masterhost) {
@@ -1757,6 +1811,40 @@ static void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
     clients = getAllClientsInfoString();
     redisLog(REDIS_WARNING, clients);
     /* Don't sdsfree() strings to avoid a crash. Memory may be corrupted. */
+
+    /* Log CURRENT CLIENT info */
+    if (server.current_client) {
+        redisClient *cc = server.current_client;
+        sds client;
+        int j;
+
+        redisLog(REDIS_WARNING, "--- CURRENT CLIENT INFO");
+        client = getClientInfoString(cc);
+        redisLog(REDIS_WARNING,"client: %s", client);
+        /* Missing sdsfree(client) to avoid crash if memory is corrupted. */
+        for (j = 0; j < cc->argc; j++) {
+            robj *decoded;
+
+            decoded = getDecodedObject(cc->argv[j]);
+            redisLog(REDIS_WARNING,"argv[%d]: '%s'", j, (char*)decoded->ptr);
+            decrRefCount(decoded);
+        }
+        /* Check if the first argument, usually a key, is found inside the
+         * selected DB, and if so print info about the associated object. */
+        if (cc->argc >= 1) {
+            robj *val, *key;
+            dictEntry *de;
+
+            key = getDecodedObject(cc->argv[1]);
+            de = dictFind(cc->db->dict, key->ptr);
+            if (de) {
+                val = dictGetEntryVal(de);
+                redisLog(REDIS_WARNING,"key '%s' found in DB containing the following object:", key->ptr);
+                redisLogObjectDebugInfo(val);
+            }
+            decrRefCount(key);
+        }
+    }
 
     redisLog(REDIS_WARNING,
 "=== REDIS BUG REPORT END. Make sure to include from START to END. ===\n\n"
