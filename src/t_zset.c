@@ -1424,6 +1424,7 @@ int zuiCompareByCardinality(const void *s1, const void *s2) {
 #define REDIS_AGGR_SUM 1
 #define REDIS_AGGR_MIN 2
 #define REDIS_AGGR_MAX 3
+#define REDIS_AGGR_COUNT 4
 #define zunionInterDictValue(_e) (dictGetEntryVal(_e) == NULL ? 1.0 : *(double*)dictGetEntryVal(_e))
 
 inline static void zunionInterAggregate(double *target, double val, int aggregate) {
@@ -1437,6 +1438,8 @@ inline static void zunionInterAggregate(double *target, double val, int aggregat
         *target = val < *target ? val : *target;
     } else if (aggregate == REDIS_AGGR_MAX) {
         *target = val > *target ? val : *target;
+    } else if (aggregate == REDIS_AGGR_COUNT) {
+        *target = *target + 1;
     } else {
         /* safety net */
         redisPanic("Unknown ZUNION/INTER aggregate type");
@@ -1514,6 +1517,8 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
                     aggregate = REDIS_AGGR_MIN;
                 } else if (!strcasecmp(c->argv[j]->ptr,"max")) {
                     aggregate = REDIS_AGGR_MAX;
+                } else if (!strcasecmp(c->argv[j]->ptr,"count")) {
+                    aggregate = REDIS_AGGR_COUNT;
                 } else {
                     zfree(src);
                     addReply(c,shared.syntaxerr);
@@ -1548,7 +1553,11 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
                 double score, value;
 
                 score = src[0].weight * zval.score;
-                if (isnan(score)) score = 0;
+                if (isnan(score)) {
+                    score = 0;
+                } else if (aggregate == REDIS_AGGR_COUNT) {
+                    score = 1;
+                }
 
                 for (j = 1; j < setnum; j++) {
                     /* It is not safe to access the zset we are
@@ -1592,7 +1601,11 @@ void zunionInterGenericCommand(redisClient *c, robj *dstkey, int op) {
 
                 /* Initialize score */
                 score = src[i].weight * zval.score;
-                if (isnan(score)) score = 0;
+                if (isnan(score)) {
+                    score = 0;
+                } else if (aggregate == REDIS_AGGR_COUNT) {
+                    score = 1;
+                }
 
                 /* Because the inputs are sorted by size, it's only possible
                  * for sets at larger indices to hold this element. */
