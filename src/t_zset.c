@@ -1261,8 +1261,11 @@ int zuiNext(zsetopsrc *op, zsetopval *val) {
     if (op->type == REDIS_SET) {
         iterset *it = &op->iter.set;
         if (op->encoding == REDIS_ENCODING_INTSET) {
-            if (!intsetGet(it->is.is,it->is.ii,(int64_t*)&val->ell))
+            int64_t ell;
+
+            if (!intsetGet(it->is.is,it->is.ii,&ell))
                 return 0;
+            val->ell = ell;
             val->score = 1.0;
 
             /* Move to next element. */

@@ -16,11 +16,11 @@
 #endif
 
 #ifdef MEMTEST_32BIT
-#define ULONG_ONEZERO 0xaaaaaaaaaaaaaaaaUL
-#define ULONG_ZEROONE 0x5555555555555555UL
-#else
 #define ULONG_ONEZERO 0xaaaaaaaaUL
 #define ULONG_ZEROONE 0x55555555UL
+#else
+#define ULONG_ONEZERO 0xaaaaaaaaaaaaaaaaUL
+#define ULONG_ZEROONE 0x5555555555555555UL
 #endif
 
 static struct winsize ws;
@@ -47,7 +47,7 @@ void memtest_progress_end(void) {
 }
 
 void memtest_progress_step(size_t curr, size_t size, char c) {
-    size_t chars = (curr*progress_full)/size, j;
+    size_t chars = ((unsigned long long)curr*progress_full)/size, j;
 
     for (j = 0; j < chars-progress_printed; j++) {
         printf("%c",c);
@@ -132,13 +132,13 @@ void memtest_fill_value(unsigned long *l, size_t bytes, unsigned long v1,
         v = (off & 1) ? v2 : v1;
         for (w = 0; w < iwords; w++) {
 #ifdef MEMTEST_32BIT
-            *l1 = *l2 = ((unsigned long)     (rand()&0xffff)) |
-                        (((unsigned long)    (rand()&0xffff)) << 16);
+            *l1 = *l2 = ((unsigned long)     v) |
+                        (((unsigned long)    v) << 16);
 #else
-            *l1 = *l2 = ((unsigned long)     (rand()&0xffff)) |
-                        (((unsigned long)    (rand()&0xffff)) << 16) |
-                        (((unsigned long)    (rand()&0xffff)) << 32) |
-                        (((unsigned long)    (rand()&0xffff)) << 48);
+            *l1 = *l2 = ((unsigned long)     v) |
+                        (((unsigned long)    v) << 16) |
+                        (((unsigned long)    v) << 32) |
+                        (((unsigned long)    v) << 48);
 #endif
             l1 += step;
             l2 += step;
