@@ -1,3 +1,9 @@
+redis (2:2.4.16-1cx1) unstable; urgency=low
+
+  * New upstream release (2.4.16)
+
+ -- Andrei Soroker <andrei@connect.me>  Mon, 6 Aug 2012 10:56:00 -0800
+
 redis (2:2.4.14-1cx1) unstable; urgency=low
 
   * New upstream release (2.4.14)
